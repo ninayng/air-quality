@@ -1,0 +1,360 @@
+---
+title: "Staggered Adoption of Air Quality Intervention"
+subtitle: "Outcomes and Analysis"
+author: "Nina Ng"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,   
+  warning = FALSE,
+  message = FALSE,
+  fig.width  = 7,
+  fig.height = 4,
+  fig.align  = "center"
+)
+
+# Core packages
+library(tidyverse)
+library(fixest)
+library(knitr)
+library(kableExtra)
+library(tibble)
+library(stringr)
+```
+
+# Introduction
+
+This analysis uses a synthetic dataset created for a graduate-level public policy course, simulating city-level PM2.5 pollution in India from 1990 to 2005 and staggered adoption of a hypothetical air quality regulation, the Preventing Pollution for a Healthy Atmosphere (PPHA).
+
+The purpose of this work sample is to illustrate applied empirical methods widely used in development and policy evaluation. The analysis proceeds in stages of increasing rigor: a naïve comparison, a pre/post time-series design, canonical two-way fixed effects (TWFE) difference-in-differences, and an event-study specification that permits inspection of dynamic treatment effects and the parallel-trends assumption. I also implement a distributed lag model to quantify cumulative effects and include a robustness check to probe sensitivity to the comparison group.
+
+The analysis draws on contemporary difference-in-differences literature, particularly work highlighting concerns about treatment-effect heterogeneity under staggered adoption and the interpretation of parallel trends assumptions. Results are illustrative and intended to demonstrate reproducible workflows, clear empirical reasoning, and standard applied econometric methods.
+
+# Data Preparation
+
+```{r data-prep}
+df <- read.csv("ppha_data.csv")
+
+# Construct core analysis variables 
+df <- df %>%
+  mutate(
+    ever_treated = as.integer(!is.na(ppha_year)),
+    # cohort label: adoption year for treated cities, 0 for never-treated
+    cohort = replace_na(ppha_year, 0),
+    # relative time to treatment (NA for never-treated; useful later)
+    rel_time = if_else(ever_treated == 1, year - ppha_year, NA_real_)
+  )
+```
+
+# Descriptive Statistics & Sample Balance
+
+Before estimating anything, it is worth understanding the structure of the panel and how treated and never-treated cities differ on observables.
+
+```{r summary-stats}
+# Panel dimensions 
+n_cities <- n_distinct(df$city_id)
+n_years  <- n_distinct(df$year)
+
+# Cohort composition 
+cohort_tab <- df %>%
+  distinct(city_id, ever_treated, cohort) %>%
+  group_by(ever_treated, cohort) %>%
+  summarise(n_cities = n(), .groups = "drop") %>%
+  arrange(cohort)
+
+kable(cohort_tab,
+      col.names = c("Ever treated", "Cohort (adoption year)", "N cities"),
+      caption   = "Panel composition by treatment cohort") %>%
+  kable_styling(latex_options = "hold_position")
+
+# Pre-treatment outcome means (years before any city is treated) 
+pre_df <- df %>% filter(year < min(ppha_year, na.rm = TRUE))
+
+pre_stats <- pre_df %>%
+  group_by(ever_treated) %>%
+  summarise(
+    mean_pm   = mean(pollution_pm, na.rm = TRUE),
+    sd_pm     = sd(pollution_pm, na.rm = TRUE),
+    n_obs     = n(),
+    .groups   = "drop"
+  ) %>%
+  mutate(group = if_else(ever_treated == 1, "Eventually treated", "Never treated"))
+
+kable(pre_stats %>% select(group, mean_pm, sd_pm, n_obs),
+      digits    = 2,
+      col.names = c("Group", "Mean PM2.5", "SD", "N (city-years)"),
+      caption   = "Pre-treatment summary statistics") %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+The table above lets the reader assess whether pre-treatment levels look balanced. Large baseline differences would not invalidate DiD (which relies on trends, not levels), but they would warrant caution about functional form and motivate the fixed-effects specifications below.
+
+# Naïve Benchmark: Difference in Means
+
+As a baseline, I estimate the unconditional mean difference in PM2.5 between cities that ever adopted PPHA and those that never did:
+
+```{r naive}
+naive <- feols(pollution_pm ~ ever_treated, cluster = ~city_id, data = df)
+etable(naive, se.below = TRUE,
+       dict = c(ever_treated = "Ever treated"))
+```
+
+This coefficient pools all years, which conflates the policy effect with any pre-existing differences between the two groups. It serves primarily as a benchmark for assessing how the estimate changes once fixed effects and time controls are introduced.
+
+# Pre/Post Analysis: 1997 Adoption Cohort
+
+For cities that adopted PPHA in 1997, I estimate a simple pre/post regression using only within-cohort variation:
+
+$$
+Y_{it} = \alpha + \tau \, \mathbb{1}[\text{year} \geq 1997] + \varepsilon_{it}
+$$
+
+where $\tau$ captures the average level shift in PM2.5 after adoption.
+
+```{r ts-1997, fig.cap="Average PM2.5 in cities adopting PPHA in 1997. Dashed line marks the adoption year."}
+df_1997 <- df %>%
+  filter(ppha_year == 1997) %>%
+  mutate(post = as.integer(year >= 1997))
+
+ts_fit <- feols(pollution_pm ~ post, cluster = ~city_id, data = df_1997)
+etable(ts_fit, se.below = TRUE,
+       dict = c(post = "Post-1997"))
+
+# Time-series plot 
+df_1997 %>%
+  group_by(year) %>%
+  summarise(pm_mean = mean(pollution_pm), .groups = "drop") %>%
+  ggplot(aes(x = year, y = pm_mean)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.5) +
+  geom_vline(xintercept = 1997, linetype = "dashed", color = "firebrick") +
+  labs(x = "Year", y = "Mean PM2.5 (µg/m³)",
+       title = "Average pollution: 1997 PPHA cohort") +
+  theme_minimal(base_size = 11)
+```
+
+The identifying assumption is that, absent PPHA, pollution would have remained at its pre-treatment level. Because this design uses no control group, any contemporaneous shock (e.g., a nationwide economic change in 1997) would bias $\tau$. This motivates the DiD design below.
+
+# Difference-in-Differences
+
+## Two-Way Fixed Effects
+
+I restrict to the 1997 cohort and never-treated cities and estimate:
+
+$$
+Y_{it} = \alpha_i + \delta_t + \tau \, (D_i \times \text{Post}_t) + \varepsilon_{it}
+$$
+
+where $\alpha_i$ and $\delta_t$ are city and year fixed effects, and $\tau$ is the ATT under the parallel-trends assumption.
+
+```{r did-twfe}
+df_did <- df %>%
+  filter(cohort %in% c(0, 1997)) %>%
+  mutate(
+    treat = as.integer(cohort == 1997),
+    post  = as.integer(year >= 1997)
+  )
+
+did_fe <- feols(pollution_pm ~ treat:post | city_id + year,
+                cluster = ~city_id, data = df_did)
+etable(did_fe, se.below = TRUE,
+       dict = c("treat:post" = "Treat × Post"))
+```
+
+By restricting to a single cohort versus never-treated controls, this specification avoids the staggered-adoption bias that arises when TWFE uses already-treated units as implicit controls (Goodman-Bacon, 2021). The estimate indicates a reduction of approximately 3.5 µg/m³ in PM2.5 following adoption.
+
+Because treatment is staggered, TWFE estimates may be biased under heterogeneous treatment effects. The event-study specification below provides a more flexible examination of treatment dynamics.
+
+# Event Study Estimates
+
+To examine dynamic treatment effects, I estimate:
+
+$$
+Y_{it} = \alpha_i + \delta_t + \sum_{r \neq -1} \tau_r \, \mathbb{1}[\text{rel. time} = r] + \varepsilon_{it}
+$$
+
+Pre-treatment coefficients $(\tau_r, \, r < -1)$ serve as a test of the parallel trends assumption; joint insignificance is consistent with similar pre-treatment trajectories between treated and control units.
+
+```{r event-study, fig.cap="Event-study estimates with 95\\% confidence intervals. Pre-treatment coefficients near zero support the parallel-trends assumption."}
+# Include never-treated as controls (rel_time = NA → excluded from i()) 
+es_df <- df %>%
+  mutate(
+    rel_time_capped = case_when(
+      is.na(rel_time)  ~ NA_real_,     # never-treated: absorbed by FEs
+      rel_time < -5     ~ -5,           # bin distant leads
+      rel_time > 5      ~ 5,            # bin distant lags
+      TRUE              ~ rel_time
+    )
+  )
+
+es_fit <- feols(
+  pollution_pm ~ i(rel_time_capped, ever_treated, ref = -1) | city_id + year,
+  cluster = ~city_id,
+  data    = es_df
+)
+
+# Custom ggplot for the event study (more control than iplot) 
+es_coefs <- as.data.frame(coeftable(es_fit)) %>%
+  rownames_to_column("term") %>%
+  filter(str_detect(term, "rel_time_capped")) %>%
+  mutate(
+    rel_time = as.numeric(str_extract(term, "-?\\d+")),
+    est      = Estimate,
+    ci_lo    = Estimate - 1.96 * `Std. Error`,
+    ci_hi    = Estimate + 1.96 * `Std. Error`
+  )
+
+# add the omitted reference period
+es_coefs <- bind_rows(
+  es_coefs,
+  tibble(rel_time = -1, est = 0, ci_lo = 0, ci_hi = 0)
+) %>%
+  arrange(rel_time)
+
+# Event-study coefficients are normalized to event time -1 (last pre-treatment period)
+
+event_plot <- ggplot(es_coefs, aes(x = rel_time, y = est)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_vline(xintercept = -0.5, linetype = "dotted", color = "firebrick") +
+  geom_ribbon(
+    aes(ymin = ci_lo, ymax = ci_hi),
+    alpha = 0.15,
+    fill = "darkblue"
+  ) +
+  geom_point(size = 1.5, color = "steelblue") +
+  geom_line(color = "steelblue", linewidth = 0.5) +
+  scale_x_continuous(breaks = seq(-5, 5, 1)) +
+  coord_cartesian(
+    ylim = c(
+      min(es_coefs$ci_lo, na.rm = TRUE),
+      max(es_coefs$ci_hi, na.rm = TRUE)
+    )
+  ) +
+  labs(
+    title = "Event-Study Estimates of Air Quality Policy Effects",
+    subtitle = "City and year fixed effects; reference period = year before treatment",
+    x = "Years Relative to Policy Adoption",
+    y = "Estimated Effect on PM2.5 (µg/m³)"
+  ) +
+  theme_minimal(base_size = 11)
+
+event_plot
+```
+
+```{r save-event-study, eval=FALSE}
+ggsave(
+  filename = "event_study_air_quality.pdf",
+  plot = event_plot,
+  width = 8,
+  height = 5,
+  units = "in"
+)
+```
+
+
+## Pre-Trends Test
+
+A formal joint test of the null $H_0: \tau_{-5} = \tau_{-4} = \cdots = \tau_{-2} = 0$:
+
+```{r pre-trends-test}
+# Wald test: joint significance of pre-treatment coefficients 
+pre_coefs <- names(coef(es_fit))[str_detect(names(coef(es_fit)), "rel_time_capped::-[2-5]")]
+
+if (length(pre_coefs) > 0) {
+  pre_test <- wald(es_fit, keep = pre_coefs)
+  print(pre_test)
+}
+```
+
+The Wald test rejects the joint null, but the pre-treatment coefficients are small in magnitude (approximately −0.27 to −0.05 µg/m³) relative to post-treatment effects of around −3 µg/m³. In large panels, statistically significant pre-trends can arise even when economic magnitudes are modest. Visual inspection of the event-study plot remains informative, though potential anticipation effects should also be considered.
+
+# Distributed Lag Specification
+
+To quantify the cumulative build-up of PPHA's effect over time, I estimate a distributed lag specification:
+
+$$
+Y_{it} = \alpha_i + \delta_t + \sum_{s=0}^{5} \tau_s \, D_{i,t-s} + \varepsilon_{it}
+$$
+
+where $D_{i,t-s}$ indicates that city $i$ was $s$ years post-adoption at time $t$, and $\sum_{s=0}^{5} \tau_s$ gives the cumulative effect after five years.
+
+```{r dist-lag}
+# Construct lag indicators programmatically 
+df_dl <- df %>%
+  arrange(city_id, year) %>%
+  group_by(city_id) %>%
+  mutate(D = as.integer(year >= ppha_year)) %>%
+  ungroup()
+
+# generate lags 1–5 in a loop rather than manually
+for (s in 1:5) {
+  lag_name <- paste0("D_lag", s)
+  df_dl <- df_dl %>%
+    group_by(city_id) %>%
+    mutate(!!lag_name := replace_na(lag(D, s), 0)) %>%
+    ungroup()
+}
+
+# Estimate 
+dl_fit <- feols(
+  pollution_pm ~ D + D_lag1 + D_lag2 + D_lag3 + D_lag4 + D_lag5 | city_id + year,
+  cluster = ~city_id,
+  data    = df_dl
+)
+etable(dl_fit, se.below = TRUE)
+
+# Cumulative effect 
+cumul <- sum(coef(dl_fit)[c("D", paste0("D_lag", 1:5))])
+cat("Cumulative effect after 5 years:", round(cumul, 2), "µg/m³\n")
+```
+
+The lag structure reveals whether the policy effect materializes immediately or builds over time. This distinction matters for cost–benefit analysis and for understanding the mechanism (e.g., gradual capital turnover vs. immediate behavioral change).
+
+# Robustness: Alternative Control Sample
+
+As a sensitivity exercise, I re-estimate the DiD using not-yet-treated cities (i.e., cities that eventually adopt PPHA but have not yet done so by the treatment date of the 1997 cohort) as the comparison group, rather than never-treated cities:
+
+```{r robust-nyt}
+# Not-yet-treated controls: cities with ppha_year > 1997, in pre-treatment years 
+df_nyt <- df %>%
+  filter(
+    (cohort == 1997) |                               # treated group
+    (ever_treated == 1 & ppha_year > 1997 & year < ppha_year)  # not-yet-treated controls
+  ) %>%
+  mutate(
+    treat = as.integer(cohort == 1997),
+    post  = as.integer(year >= 1997)
+  )
+
+did_nyt <- feols(pollution_pm ~ treat:post | city_id + year,
+                 cluster = ~city_id, data = df_nyt)
+
+# Compare the two estimates side by side 
+etable(did_fe, did_nyt,
+       se.below = TRUE,
+       headers  = c("Never-treated controls", "Not-yet-treated controls"),
+       dict     = c("treat:post" = "Treat × Post"))
+```
+
+If the point estimates are similar across control groups, this supports the view that the results are not driven by the specific choice of comparison sample. It is important to check, given concerns about the composition of implicit controls in staggered settings.
+
+# Conclusion
+
+Across specifications (naïve comparison, pre/post time series, TWFE DiD, event study, and distributed lag), the synthetic data consistently show reductions in PM2.5 following PPHA adoption, with effects that build over time.
+
+The analysis demonstrates a range of applied microeconometric approaches, moving from simple comparisons to increasingly rigorous causal designs. It also highlights where recent methodological advances in difference-in-differences estimation would be relevant in applied work.
+
+\newpage 
+# References
+
+- Angrist, J. D. & Pischke, J.-S. (2009). *Mostly Harmless Econometrics*. Princeton University Press.
+- Bertrand, M., Duflo, E., & Mullainathan, S. (2004). How much should we trust differences-in-differences estimates? *QJE*, 119(1), 249–275.
+- Callaway, B. & Sant'Anna, P. H. C. (2021). Difference-in-differences with multiple time periods. *JoE*, 225(2), 200–230.
+- Cunningham, S. (2021). *Causal Inference: The Mixtape*. Yale University Press.
+- de Chaisemartin, C. & D'Haultfœuille, X. (2020). Two-way fixed effects estimators with heterogeneous treatment effects. *AER*, 110(9), 2964–2996.
+- Goodman-Bacon, A. (2021). Difference-in-differences with variation in treatment timing. *Econometrica*, 89(5), 2261–2290.
