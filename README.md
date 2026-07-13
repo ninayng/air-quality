@@ -1,6 +1,6 @@
 # Air Quality Program Evaluation
 
-This repository contains a program evaluation exercise using a synthetic panel dataset of city-level PM2.5 pollution in India from 1990–2005. The project simulates staggered adoption of a hypothetical environmental regulation, the Preventing Pollution for a Healthy Atmosphere (PPHA), and demonstrates empirical methods commonly used in applied microeconomics and policy evaluation.
+This repository contains a program evaluation exercise using a synthetic panel dataset of city-level PM2.5 pollution in India from 1990–2005. The project simulates staggered adoption of a hypothetical environmental regulation, the Preventing Pollution for a Healthy Atmosphere (PPHA), and demonstrates empirical methods commonly used in applied microeconomics and policy evaluation. The code is provided for demonstration purposes; the underlying dataset is omitted.
 
 ## Research Question
 
