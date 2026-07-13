@@ -247,7 +247,7 @@ event_plot
 
 ```{r save-event-study, eval=FALSE}
 ggsave(
-  filename = "event_study_air_quality.pdf",
+  filename = "figures/event_study_air_quality.pdf",
   plot = event_plot,
   width = 8,
   height = 5,
