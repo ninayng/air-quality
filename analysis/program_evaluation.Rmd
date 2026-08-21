@@ -72,22 +72,32 @@ kable(cohort_tab,
   kable_styling(latex_options = "hold_position")
 
 # Pre-treatment outcome means (years before any city is treated) 
-pre_df <- df %>% filter(year < min(ppha_year, na.rm = TRUE))
+pre_df <- df %>%
+  filter(year < min(ppha_year, na.rm = TRUE)) %>%
+  group_by(city_id, ever_treated) %>%
+  summarise(
+    city_mean_pm = mean(pollution_pm, na.rm = TRUE),
+    .groups = "drop"
+  )
 
 pre_stats <- pre_df %>%
   group_by(ever_treated) %>%
   summarise(
-    mean_pm   = mean(pollution_pm, na.rm = TRUE),
-    sd_pm     = sd(pollution_pm, na.rm = TRUE),
-    n_obs     = n(),
-    .groups   = "drop"
+    mean_pm = mean(city_mean_pm),
+    sd_pm   = sd(city_mean_pm),
+    n_cities = n(),
+    .groups = "drop"
   ) %>%
-  mutate(group = if_else(ever_treated == 1, "Eventually treated", "Never treated"))
+  mutate(
+    group = if_else(ever_treated == 1, "Eventually treated", "Never treated")
+  )
 
-kable(pre_stats %>% select(group, mean_pm, sd_pm, n_obs),
-      digits    = 2,
-      col.names = c("Group", "Mean PM2.5", "SD", "N (city-years)"),
-      caption   = "Pre-treatment summary statistics") %>%
+kable(
+  pre_stats %>% select(group, mean_pm, sd_pm, n_cities),
+  digits = 2,
+  col.names = c("Group", "Mean PM2.5", "SD", "N (cities)"),
+  caption = "Pre-treatment summary statistics"
+) %>%
   kable_styling(latex_options = "hold_position")
 ```
 
