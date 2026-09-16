@@ -14,6 +14,7 @@ The analysis compares several increasingly rigorous approaches:
 - Pre/post time-series analysis
 - Two-way fixed effects difference-in-differences
 - Event-study estimation
+- Staggered difference-in-differences
 - Distributed lag models
 - Sensitivity analysis using alternative control groups
 
