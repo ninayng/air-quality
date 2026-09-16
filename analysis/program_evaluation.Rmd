@@ -30,7 +30,7 @@ library(stringr)
 
 This analysis uses a synthetic dataset created for a graduate-level public policy course, simulating city-level PM2.5 pollution in India from 1990 to 2005 and staggered adoption of a hypothetical air quality regulation, the Preventing Pollution for a Healthy Atmosphere (PPHA).
 
-The purpose of this work sample is to illustrate applied empirical methods widely used in development and policy evaluation. The analysis proceeds in stages of increasing rigor: a naïve comparison, a pre/post time-series design, canonical two-way fixed effects (TWFE) difference-in-differences, and an event-study specification that permits inspection of dynamic treatment effects and the parallel-trends assumption. I also implement a distributed lag model to quantify cumulative effects and include a robustness check to probe sensitivity to the comparison group.
+The purpose of this work sample is to illustrate applied empirical methods widely used in development and policy evaluation. The analysis proceeds in stages of increasing rigor: a naïve comparison, a pre/post time-series design, canonical two-way fixed effects (TWFE) difference-in-differences, and an event-study specification that permits inspection of dynamic treatment effects and the parallel-trends assumption. A brief investigation into staggered difference-in-differences allows us to parse effects across different treatment times and cities. I also implement a distributed lag model to quantify cumulative effects and include a robustness check to probe sensitivity to the comparison group.
 
 The analysis draws on contemporary difference-in-differences literature, particularly work highlighting concerns about treatment-effect heterogeneity under staggered adoption and the interpretation of parallel trends assumptions. Results are illustrative and intended to demonstrate reproducible workflows, clear empirical reasoning, and standard applied econometric methods.
 
@@ -190,11 +190,11 @@ $$
 Pre-treatment coefficients $(\tau_r, \, r < -1)$ serve as a test of the parallel trends assumption; joint insignificance is consistent with similar pre-treatment trajectories between treated and control units.
 
 ```{r event-study, fig.cap="Event-study estimates with 95\\% confidence intervals. Pre-treatment coefficients near zero support the parallel-trends assumption."}
-# Include never-treated as controls (rel_time = NA → excluded from i()) 
+# Include never-treated as controls (rel_time = 0 → excluded from i()) 
 es_df <- df %>%
   mutate(
     rel_time_capped = case_when(
-      is.na(rel_time)  ~ NA_real_,     # never-treated: absorbed by FEs
+      is.na(rel_time)  ~ 0,     # never-treated: absorbed by FEs
       rel_time < -5     ~ -5,           # bin distant leads
       rel_time > 5      ~ 5,            # bin distant lags
       TRUE              ~ rel_time
@@ -264,7 +264,7 @@ ggsave(
   units = "in"
 )
 ```
-
+The event-study plot provides a visual diagnostic of pre-treatment trajectories and the timing of post-adoption effects. Because this conventional specification uses the full staggered-adoption sample, its dynamic coefficients may be difficult to interpret as preferred causal estimates when effects vary across cohorts or exposure duration. I therefore use the following joint test to assess pre-treatment differences and present Sun-Abraham estimates below as the preferred staggered-adoption specification.
 
 ## Pre-Trends Test
 
@@ -280,11 +280,10 @@ if (length(pre_coefs) > 0) {
 }
 ```
 
-The Wald test rejects the joint null, but the pre-treatment coefficients are small in magnitude (approximately −0.27 to −0.05 µg/m³) relative to post-treatment effects of around −3 µg/m³. In large panels, statistically significant pre-trends can arise even when economic magnitudes are modest. Visual inspection of the event-study plot remains informative, though potential anticipation effects should also be considered.
-
+The joint Wald test rejects the null that all pre-treatment coefficients equal zero. Given the large panel, this result reflects precise detection of small lead estimates that are modest in magnitude relative to the post-adoption decline in PM2.5. The conventional event study therefore indicates statistically detectable pre-treatment differences, but their economic significance appears limited. I interpret these estimates primarily as a diagnostic of treatment timing and assess their robustness using the staggered-adoption specification below.
 
 # Staggered Difference-in-Differences
-Because PPHA is adopted at different times across cities, a natural extension is to estimate treatment effects using a staggered-adoption DiD framework. The Sun–Abraham (2021) estimator addresses treatment-effect heterogeneity across adoption cohorts by estimating cohort-specific event-time effects and aggregating them into overall dynamic treatment effects. This approach avoids the implicit comparisons between units at different stages of treatment that can arise in conventional two-way fixed effects event studies.
+To incorporate all adoption cohorts, I next estimate treatment effects using a staggered-adoption DiD framework. The Sun-Abraham (2021) estimator addresses treatment-effect heterogeneity across adoption cohorts by estimating cohort-specific event-time effects and aggregating them into overall dynamic treatment effects. This approach avoids the implicit comparisons between units at different stages of treatment that can arise in conventional two-way fixed-effects event studies.
 
 ```{r}
 sa_fit <- feols(
@@ -339,8 +338,7 @@ sa_plot <- ggplot(sa_coefs, aes(x = rel_time, y = estimate)) +
 sa_plot
 ```
 
-The Sun–Abraham estimates provide a complementary view of treatment dynamics by allowing effects to vary across adoption cohorts before aggregation. Compared with the conventional event study, the staggered-adoption specification produces more stable pre-treatment estimates and a clearer decline in PM2.5 following adoption. This pattern suggests that accounting explicitly for treatment timing may change the interpretation of dynamic effects and reinforces the importance of matching the empirical design to the structure of policy rollout.
-
+The Sun–Abraham estimates provide a complementary view of treatment dynamics by allowing effects to vary across adoption cohorts before aggregation. Compared to the conventional event study, the staggered-adoption specification produces similarly stable pre-treatment estimates and a clearer decline in PM2.5 following adoption. This pattern suggests that accounting explicitly for treatment timing may change the interpretation of dynamic effects and reinforces the importance of matching the empirical design to the structure of policy rollout.
 
 # Distributed Lag Specification
 
@@ -423,7 +421,7 @@ The analysis demonstrates a range of applied microeconometric approaches, moving
 
 - Angrist, J. D. & Pischke, J.-S. (2009). *Mostly Harmless Econometrics*. Princeton University Press.
 - Bertrand, M., Duflo, E., & Mullainathan, S. (2004). How much should we trust differences-in-differences estimates? *QJE*, 119(1), 249–275.
-- Callaway, B. & Sant'Anna, P. H. C. (2021). Difference-in-differences with multiple time periods. *JoE*, 225(2), 200–230.
+- Sun, L. & Abraham, S. (2021). Estimating dynamic treatment effects in event studies with heterogeneous treatment effects. *Journal of Econometrics*, 225(2), 175–199.
 - Cunningham, S. (2021). *Causal Inference: The Mixtape*. Yale University Press.
 - de Chaisemartin, C. & D'Haultfœuille, X. (2020). Two-way fixed effects estimators with heterogeneous treatment effects. *AER*, 110(9), 2964–2996.
 - Goodman-Bacon, A. (2021). Difference-in-differences with variation in treatment timing. *Econometrica*, 89(5), 2261–2290.
